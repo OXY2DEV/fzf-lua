@@ -62,27 +62,36 @@ end
 M.setup_opts = {}
 M.globals = setmetatable({}, {
   __index = function(_, index)
+    local function setup_opts()
+      return M._profile_opts or M.setup_opts
+    end
+    local function setup_defaults()
+      return M._profile_opts and (M._profile_opts.defaults or {}) or M.setup_opts.defaults or {}
+    end
     -- build normalized globals, option priority below:
     --   (1) provider specific globals (post-setup)
     --   (2) generic global-defaults (post-setup), i.e. `setup({ defaults = { ... } })`
     --   (3) fzf-lua's true defaults (pre-setup, static)
     local fzflua_default = utils.map_get(M.defaults, index)
-    local setup_default = utils.map_get(M.setup_opts.defaults, index)
-    local setup_value = utils.map_get(M.setup_opts, index)
+    local setup_default = utils.map_get(setup_defaults(), index)
+    local setup_value = utils.map_get(setup_opts(), index)
     local function build_bind_tables(keys)
       -- bind tables are logical exception, do not merge with defaults unless `[1] == true`
       -- normalize all binds as lowercase to prevent duplicate keys (#654)
       local ret = {}
+      -- exclude case-sensitive alt-binds from being lowercased
+      local exclude_case_sensitive_alt = "^alt%-%a$"
       for _, k in ipairs(keys) do
+        if type(setup_value) == "function" then setup_value = setup_value() end
         ret[k] = setup_value and type(setup_value[k]) == "table"
-            and vim.tbl_deep_extend("keep", utils.tbl_deep_clone(setup_value[k]),
-              setup_value[k][1] == true and fzflua_default[k] or {})
-            or utils.tbl_deep_clone(fzflua_default[k])
-        if ret[k] then
+            and vim.tbl_deep_extend("keep",
+              utils.map_tolower(utils.tbl_deep_clone(setup_value[k]), exclude_case_sensitive_alt),
+              setup_value[k][1] == true and
+              utils.map_tolower(fzflua_default[k], exclude_case_sensitive_alt) or {})
+            or utils.map_tolower(utils.tbl_deep_clone(fzflua_default[k]), exclude_case_sensitive_alt)
+        if ret[k] and ret[k][1] ~= nil then
           -- Remove the [1] indicating inheritance from defaults and
-          -- exclude case-sensitive alt-binds from being lowercased
           ret[k][1] = nil
-          ret[k] = utils.map_tolower(ret[k], "^alt%-%a$")
         end
       end
       return ret
@@ -108,10 +117,10 @@ M.globals = setmetatable({}, {
         or (setup_value and (setup_value.actions or setup_value._actions)) then
       -- (2) the existence of the `actions` key implies we're dealing with a picker
       -- override global provider defaults supplied by the user's setup `defaults` table
-      ret = vim.tbl_deep_extend("force", ret, M.setup_opts.defaults or {})
+      ret = vim.tbl_deep_extend("force", ret, setup_defaults())
     end
     -- (3) override with the specific provider options from the users's `setup` option
-    ret = vim.tbl_deep_extend("force", ret, utils.map_get(M.setup_opts, index) or {})
+    ret = vim.tbl_deep_extend("force", ret, utils.map_get(setup_opts(), index) or {})
     return ret
   end,
   __newindex = function(_, index, _)
@@ -127,6 +136,11 @@ do
   m.globals = M.globals
 end
 
+local eval = function(v, ...)
+  if vim.is_callable(v) then return v(...) end
+  return v
+end
+
 ---@param opts table<string, unknown>|fun():table?
 ---@param globals string|table?
 ---@param __resume_key string?
@@ -136,6 +150,17 @@ function M.normalize_opts(opts, globals, __resume_key)
   -- opts can also be a function that returns an opts table
   if type(opts) == "function" then
     opts = opts()
+  end
+
+  local profile = opts.profile or (function()
+    if type(globals) == "string" then
+      local picker_opts = M.globals[globals]
+      return picker_opts.profile or picker_opts[1]
+    end
+  end)()
+  if type(profile) == "table" or type(profile) == "string" then
+    -- TODO: we should probably cache the profiles
+    M._profile_opts = utils.load_profiles(profile, 1)
   end
 
   -- expand opts that were specified with a dot
@@ -223,10 +248,10 @@ function M.normalize_opts(opts, globals, __resume_key)
     } or nil
   end
   local exclude_case_sensitive_alt = "^alt%-%a$"
-  opts.keymap = keymap_tolower(opts.keymap, exclude_case_sensitive_alt)
-  opts.actions = utils.map_tolower(opts.actions, exclude_case_sensitive_alt)
-  globals.keymap = keymap_tolower(globals.keymap, exclude_case_sensitive_alt)
-  globals.actions = utils.map_tolower(globals.actions, exclude_case_sensitive_alt)
+  opts.keymap = keymap_tolower(eval(opts.keymap, opts), exclude_case_sensitive_alt)
+  opts.actions = utils.map_tolower(eval(opts.actions, opts), exclude_case_sensitive_alt)
+  globals.keymap = keymap_tolower(eval(globals.keymap, opts), exclude_case_sensitive_alt)
+  globals.actions = utils.map_tolower(eval(globals.actions, opts), exclude_case_sensitive_alt)
 
   -- inherit from globals.actions?
   if type(globals._actions) == "function" then
@@ -382,6 +407,8 @@ function M.normalize_opts(opts, globals, __resume_key)
     { "cwd_prompt",                             "show_cwd_prompt" },
     { "resume",                                 "continue_last_search" },
     { "resume",                                 "repeat_last_search" },
+    { "jump1",                                  "jump_to_single_result" },
+    { "jump1_action",                           "jump_to_single_result_action" },
     { "hls.normal",                             "winopts.hl_normal" },
     { "hls.border",                             "winopts.hl_border" },
     { "hls.cursor",                             "previewers.builtin.hl_cursor" },
@@ -424,6 +451,7 @@ function M.normalize_opts(opts, globals, __resume_key)
   if opts.complete then
     opts.actions = opts.actions or {}
     opts.actions.enter = actions.complete
+    opts.actions["ctrl-c"] = function() end
   end
 
   -- Merge highlight overrides with defaults, we only do this after the
@@ -461,7 +489,13 @@ function M.normalize_opts(opts, globals, __resume_key)
   end
 
   -- Exclude file icons from the fuzzy matching (#1080)
-  if opts.file_icons and opts._fzf_nth_devicons and not opts.fzf_opts["--delimiter"] then
+  if opts.file_icons
+      and opts._fzf_nth_devicons
+      and not opts.fzf_opts["--delimiter"]
+      -- Can't work due to : delimiter (#2112)
+      and opts.previewer ~= "bat"
+      and opts.previewer ~= "bat_native"
+  then
     opts.fzf_opts["--nth"] = opts.fzf_opts["--nth"] or "-1.."
     opts.fzf_opts["--delimiter"] = string.format("[%s]", utils.nbsp)
   end
@@ -494,6 +528,29 @@ function M.normalize_opts(opts, globals, __resume_key)
   -- Auto-generate fzf's colorscheme
   opts.fzf_colors = type(opts.fzf_colors) == "table" and opts.fzf_colors
       or opts.fzf_colors == true and { true } or {}
+
+  -- Inerherit from fzf.vim's g:fzf_colors
+  -- fzf.vim:
+  --   vim.g.fzf_colors = {
+  --     ["fg"] = { "fg" , "Comment", "Normal" }
+  --   }
+  -- fzf-lua:
+  --   fzf_colors = {
+  --     ["fg"] = { "fg" , { "Comment", "Normal" } }
+  --   }
+  opts.fzf_colors = vim.tbl_extend("keep", opts.fzf_colors,
+    vim.tbl_map(function(v)
+      -- Value isn't guaranteed a table, e.g:
+      --   vim.g.fzf_colors = { ["gutter"] = "-1" }
+      if type(v) ~= "table" then return tostring(v) end
+      -- We accept both fzf.vim and fzf-lua style values
+      if type(v[2]) == "table" then return v end
+      local new_v = { v[1], { v[2] } }
+      for i = 3, #v do
+        table.insert(new_v[2], v[i])
+      end
+      return new_v
+    end, type(vim.g.fzf_colors) == "table" and vim.g.fzf_colors or {}))
 
   if opts.fzf_colors[1] == true then
     opts.fzf_colors[1] = nil
@@ -543,9 +600,11 @@ function M.normalize_opts(opts, globals, __resume_key)
   -- we need the original `cwd` with `autochdir=true` (#882)
   -- use `_cwd` to not interfere with supplied users' options
   -- as this can have unintended effects (e.g. in "buffers")
-  if vim.o.autochdir and not opts.cwd then
-    opts._cwd = uv.cwd()
-  end
+  -- NOTE: we now always get the original cwd as there are
+  -- other user scenarios which need to use `opts._cwd`, for
+  -- exmaple, using the "hide" profile and resuming fzf-lua
+  -- from another tab after a `:tcd <dir>` (#1854)
+  opts._cwd = uv.cwd()
 
   if opts.cwd and #opts.cwd > 0 then
     -- NOTE: on Windows, `expand` will replace all backslashes with forward slashes
@@ -632,6 +691,8 @@ function M.normalize_opts(opts, globals, __resume_key)
     -- If `multiline` was specified we add both "read0" & "print0" flags
     opts.fzf_opts["--read0"] = true
     opts.fzf_opts["--print0"] = true
+    local gap = (tonumber(opts.multiline) or 1) - 1
+    if gap > 0 then opts.fzf_opts["--gap"] = gap end
   else
     -- If not possible (fzf v<0.53|skim), nullify the option
     opts.multiline = nil
@@ -650,22 +711,26 @@ function M.normalize_opts(opts, globals, __resume_key)
           -- All fzf flags not existing in skim
           ["all"] = {
             fzf_opts = {
+              ["--scheme"]         = false,
               ["--gap"]            = false,
               ["--info"]           = false,
               ["--border"]         = false,
               ["--scrollbar"]      = false,
               ["--no-scrollbar"]   = false,
+              ["--wrap"]           = true,
+              ["--wrap-sign"]      = true,
               ["--highlight-line"] = false,
             }
           },
         }
       else
         return "fzf", opts.__FZF_VERSION, {
+          ["0.59"] = { fzf_opts = { ["--scheme"] = "path" } },
           ["0.56"] = { fzf_opts = { ["--gap"] = true } },
           ["0.54"] = {
             fzf_opts = {
-              ["-wrap"]            = true,
-              ["-wrap-sign"]       = true,
+              ["--wrap"]           = true,
+              ["--wrap-sign"]      = true,
               ["--highlight-line"] = true,
             }
           },
@@ -743,7 +808,11 @@ function M.normalize_opts(opts, globals, __resume_key)
 
   -- Are we using fzf-tmux? if so get available columns
   opts._is_fzf_tmux = (function()
-    if not vim.env.TMUX then return end
+    if not vim.env.TMUX then
+      -- Could have adverse effects with skim (#1974)
+      opts.fzf_opts["--tmux"] = nil
+      return
+    end
     local is_tmux =
         (opts.fzf_bin:match("fzf%-tmux$") or opts.fzf_bin:match("sk%-tmux$")) and 1
         -- fzf v0.53 added native tmux integration
@@ -811,12 +880,41 @@ function M.normalize_opts(opts, globals, __resume_key)
       -- We also want to store the cached extensions/filenames in the main thread
       -- which we do in "make_entry.postprocess"
       opts.__mt_postprocess = opts.multiprocess
-          and [[return require("make_entry").postprocess]]
+          and [[return require("fzf-lua.make_entry").postprocess]]
           -- NOTE: we don't need to update mini when running on main thread
           -- or require("fzf-lua.make_entry").postprocess
           or nil
     end
   end
+
+  if opts.line_query and not utils.has(opts, "fzf", { 0, 59 }) then
+    utils.warn("'line_query' requires fzf >= 0.59, ignoring.")
+  elseif opts.line_query then
+    utils.map_set(opts, "winopts.preview.winopts.cursorline", true)
+    utils.map_set(opts, "keymap.fzf.change",
+      "transform:" .. FzfLua.shell.raw_action(function(q, _, _)
+        local lnum = q[1]:match(":(%d+)$")
+        local new_q, subs = q[1]:gsub(":%d*$", "")
+        -- No subs made, no ":" at end of string, do nothing
+        if subs == 0 then return end
+        local trans = string.format("search(%s)", new_q)
+        local win = FzfLua.win.__SELF()
+        -- Do we need to change the offset in native fzf previewer (e.g. bat)?
+        if lnum and win and win._previewer and win._previewer._preview_offset then
+          local optstr = opts.fzf_opts["--preview-window"]
+          local offset = win._previewer:_preview_offset(lnum)
+          trans = string.format("%s+change-preview-window(%s:%s)", trans, optstr, offset)
+        end
+        return trans
+      end, "{q}", opts.debug))
+  end
+
+  if type(opts.enrich) == "function" then
+    opts = opts.enrich(opts)
+  end
+
+  -- nullify profile options
+  M._profile_opts = nil
 
   -- mark as normalized
   opts._normalized = true
@@ -849,16 +947,16 @@ M.get_action_helpstr = function(fn)
 end
 
 M._action_to_helpstr = {
-  [actions.dummy_abort]         = "abort",
-  [actions.file_edit]           = "file-edit",
-  [actions.file_edit_or_qf]     = "file-edit-or-qf",
-  [actions.file_split]          = "file-split",
-  [actions.file_vsplit]         = "file-vsplit",
-  [actions.file_tabedit]        = "file-tabedit",
-  [actions.file_sel_to_qf]      = "file-selection-to-qf",
-  [actions.file_sel_to_ll]      = "file-selection-to-loclist",
-  [actions.file_switch]         = "file-switch",
-  [actions.file_switch_or_edit] = "file-switch-or-edit",
+  [actions.dummy_abort]          = "abort",
+  [actions.file_edit]            = "file-edit",
+  [actions.file_edit_or_qf]      = "file-edit-or-qf",
+  [actions.file_split]           = "file-split",
+  [actions.file_vsplit]          = "file-vsplit",
+  [actions.file_tabedit]         = "file-tabedit",
+  [actions.file_sel_to_qf]       = "file-selection-to-qf",
+  [actions.file_sel_to_ll]       = "file-selection-to-loclist",
+  [actions.file_switch]          = "file-switch",
+  [actions.file_switch_or_edit]  = "file-switch-or-edit",
   -- Since default actions refactor these are just refs to
   -- their correspondent `file_xxx` equivalents
   -- [actions.buf_edit]            = "buffer-edit",
@@ -870,62 +968,67 @@ M._action_to_helpstr = {
   -- [actions.buf_tabedit]         = "buffer-tabedit",
   -- [actions.buf_switch]          = "buffer-switch",
   -- [actions.buf_switch_or_edit]  = "buffer-switch-or-edit",
-  [actions.buf_del]             = "buffer-delete",
-  [actions.run_builtin]         = "run-builtin",
-  [actions.ex_run]              = "edit-cmd",
-  [actions.ex_run_cr]           = "exec-cmd",
-  [actions.exec_menu]           = "exec-menu",
-  [actions.search]              = "edit-search",
-  [actions.search_cr]           = "exec-search",
-  [actions.goto_mark]           = "goto-mark",
-  [actions.goto_jump]           = "goto-jump",
-  [actions.keymap_apply]        = "keymap-apply",
-  [actions.keymap_edit]         = "keymap-edit",
-  [actions.keymap_split]        = "keymap-split",
-  [actions.keymap_vsplit]       = "keymap-vsplit",
-  [actions.keymap_tabedit]      = "keymap-tabedit",
-  [actions.spell_apply]         = "spell-apply",
-  [actions.set_filetype]        = "set-filetype",
-  [actions.packadd]             = "packadd",
-  [actions.help]                = "help-open",
-  [actions.help_vert]           = "help-vertical",
-  [actions.help_tab]            = "help-tab",
-  [actions.man]                 = "man-open",
-  [actions.man_vert]            = "man-vertical",
-  [actions.man_tab]             = "man-tab",
-  [actions.git_branch_add]      = "git-branch-add",
-  [actions.git_branch_del]      = "git-branch-del",
-  [actions.git_switch]          = "git-switch",
-  [actions.git_checkout]        = "git-checkout",
-  [actions.git_reset]           = "git-reset",
-  [actions.git_stage]           = "git-stage",
-  [actions.git_unstage]         = "git-unstage",
-  [actions.git_stage_unstage]   = "git-stage-unstage",
-  [actions.git_stash_pop]       = "git-stash-pop",
-  [actions.git_stash_drop]      = "git-stash-drop",
-  [actions.git_stash_apply]     = "git-stash-apply",
-  [actions.git_buf_edit]        = "git-buffer-edit",
-  [actions.git_buf_tabedit]     = "git-buffer-tabedit",
-  [actions.git_buf_split]       = "git-buffer-split",
-  [actions.git_buf_vsplit]      = "git-buffer-vsplit",
-  [actions.git_goto_line]       = "git-goto-line",
-  [actions.git_yank_commit]     = "git-yank-commit",
-  [actions.arg_add]             = "arg-list-add",
-  [actions.arg_del]             = "arg-list-delete",
-  [actions.toggle_ignore]       = "toggle-ignore",
-  [actions.toggle_hidden]       = "toggle-hidden",
-  [actions.grep_lgrep]          = "grep<->lgrep",
-  [actions.sym_lsym]            = "sym<->lsym",
-  [actions.tmux_buf_set_reg]    = "set-register",
-  [actions.paste_register]      = "paste-register",
-  [actions.set_qflist]          = "set-{qf|loc}list",
-  [actions.apply_profile]       = "apply-profile",
-  [actions.complete]            = "complete",
-  [actions.dap_bp_del]          = "dap-bp-delete",
-  [actions.colorscheme]         = "colorscheme-apply",
-  [actions.cs_delete]           = "colorscheme-delete",
-  [actions.cs_update]           = "colorscheme-update",
-  [actions.toggle_bg]           = "toggle-background",
+  [actions.buf_del]              = "buffer-delete",
+  [actions.run_builtin]          = "run-builtin",
+  [actions.ex_run]               = "edit-cmd",
+  [actions.ex_run_cr]            = "exec-cmd",
+  [actions.exec_menu]            = "exec-menu",
+  [actions.search]               = "edit-search",
+  [actions.search_cr]            = "exec-search",
+  [actions.goto_mark]            = "goto-mark",
+  [actions.goto_jump]            = "goto-jump",
+  [actions.keymap_apply]         = "keymap-apply",
+  [actions.keymap_edit]          = "keymap-edit",
+  [actions.keymap_split]         = "keymap-split",
+  [actions.keymap_vsplit]        = "keymap-vsplit",
+  [actions.keymap_tabedit]       = "keymap-tabedit",
+  [actions.nvim_opt_edit_local]  = "nvim-opt-edit-local",
+  [actions.nvim_opt_edit_global] = "nvim-opt-edit-global",
+  [actions.spell_apply]          = "spell-apply",
+  [actions.spell_suggest]        = "spell-suggest",
+  [actions.set_filetype]         = "set-filetype",
+  [actions.packadd]              = "packadd",
+  [actions.help]                 = "help-open",
+  [actions.help_vert]            = "help-vertical",
+  [actions.help_tab]             = "help-tab",
+  [actions.man]                  = "man-open",
+  [actions.man_vert]             = "man-vertical",
+  [actions.man_tab]              = "man-tab",
+  [actions.git_branch_add]       = "git-branch-add",
+  [actions.git_branch_del]       = "git-branch-del",
+  [actions.git_switch]           = "git-switch",
+  [actions.git_checkout]         = "git-checkout",
+  [actions.git_reset]            = "git-reset",
+  [actions.git_stage]            = "git-stage",
+  [actions.git_unstage]          = "git-unstage",
+  [actions.git_stage_unstage]    = "git-stage-unstage",
+  [actions.git_stash_pop]        = "git-stash-pop",
+  [actions.git_stash_drop]       = "git-stash-drop",
+  [actions.git_stash_apply]      = "git-stash-apply",
+  [actions.git_buf_edit]         = "git-buffer-edit",
+  [actions.git_buf_tabedit]      = "git-buffer-tabedit",
+  [actions.git_buf_split]        = "git-buffer-split",
+  [actions.git_buf_vsplit]       = "git-buffer-vsplit",
+  [actions.git_goto_line]        = "git-goto-line",
+  [actions.git_yank_commit]      = "git-yank-commit",
+  [actions.arg_add]              = "arg-list-add",
+  [actions.arg_del]              = "arg-list-delete",
+  [actions.toggle_ignore]        = "toggle-ignore",
+  [actions.toggle_hidden]        = "toggle-hidden",
+  [actions.toggle_follow]        = "toggle-follow",
+  [actions.grep_lgrep]           = "grep<->lgrep",
+  [actions.sym_lsym]             = "sym<->lsym",
+  [actions.tmux_buf_set_reg]     = "set-register",
+  [actions.paste_register]       = "paste-register",
+  [actions.set_qflist]           = "set-{qf|loc}list",
+  [actions.apply_profile]        = "apply-profile",
+  [actions.complete]             = "complete",
+  [actions.dap_bp_del]           = "dap-bp-delete",
+  [actions.colorscheme]          = "colorscheme-apply",
+  [actions.cs_delete]            = "colorscheme-delete",
+  [actions.cs_update]            = "colorscheme-update",
+  [actions.toggle_bg]            = "toggle-background",
+  [actions.cd]                   = "change-directory",
 }
 
 return M

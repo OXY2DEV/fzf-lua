@@ -1,16 +1,14 @@
 local function title(str, opts)
-  return vim.tbl_deep_extend("keep", opts or {},
-    {
-      winopts = {
-        -- title = { { " " .. str .. " ", "IncSearch" } },
-        title = " " .. str .. " ",
-      }
-    })
+  return vim.tbl_deep_extend("keep", opts or {}, {
+    winopts = {
+      -- title = { { " " .. str .. " ", "IncSearch" } },
+      title = " " .. str .. " ",
+    }
+  })
 end
 return {
-  desc                 = "defaults using title instead of prompt",
-  defaults             = { prompt = false },
-  winopts              = { title_pos = "center" },
+  desc                 = "defaults using title for picker info",
+  winopts              = { title_pos = "center", preview = { title_pos = "center" } },
   files                = title("Files"),
   buffers              = title("Buffers"),
   tabs                 = title("Tabs"),
@@ -59,9 +57,10 @@ return {
   search_history       = title("Search history"),
   registers            = title("Registers"),
   keymaps              = title("Keymaps"),
+  nvim_options         = title("Nvim Options"),
   spell_suggest        = title("Spell Suggestions"),
   filetypes            = title("Filetypes"),
-  packadd              = title("Packer Packadd"),
+  packadd              = title("Packadd"),
   menus                = title("Menus"),
   tmux                 = title("Tmux Buffers"),
   dap                  = {

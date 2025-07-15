@@ -8,7 +8,7 @@ end
 return {
   { "default-title" }, -- base profile
   desc       = "match telescope default highlights|keybinds",
-  fzf_opts   = { ["--layout"] = "default", ["--marker"] = "+" },
+  fzf_opts   = { ["--layout"] = "default", ["--marker"] = "+" , ["--cycle"] = true},
   winopts    = {
     width   = 0.8,
     height  = 0.9,
@@ -36,10 +36,6 @@ return {
     cursorline     = hl_validate "TelescopeSelection",
     cursorlinenr   = hl_validate "TelescopeSelection",
     search         = hl_validate "IncSearch",
-  },
-  lsp        = {
-    jump_to_single_result = true,
-    jump_to_single_result_action = actions.file_edit,
   },
   fzf_colors = {
     ["fg"] = { "fg", "TelescopeNormal" },

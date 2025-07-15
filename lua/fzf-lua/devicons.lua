@@ -45,8 +45,6 @@ function NvimWebDevicons:new()
 end
 
 function NvimWebDevicons:load(do_not_lazy_load)
-  -- limit devicons support to nvim >=0.8, although official support is >=0.7
-  -- running setup on 0.7 errs with "W18: Invalid character in group name"
   if not self._package_loaded
       -- do not trigger lazy loading
       and (not do_not_lazy_load or package.loaded[self._package_name])
@@ -180,7 +178,7 @@ function MiniIcons:new()
 end
 
 function MiniIcons:load(do_not_lazy_load)
-  if not self._package_loaded and utils.__HAS_NVIM_08
+  if not self._package_loaded
       -- do not trigger lazy loading
       and (not do_not_lazy_load or package.loaded[self._package_name])
   then
@@ -359,7 +357,7 @@ M.plugin_load = function(provider, do_not_lazy_load)
       or provider == "mini" and M.__MINI
       or provider == "devicons" and M.__DEVICONS
       or (function()
-        if vim.g.fzf_lua_is_headless then
+        if _G._fzf_lua_is_headless then
           -- headless instance, fzf-lua server exists, attempt
           -- to load icons from main neovim instance
           ---@diagnostic disable-next-line: undefined-field
@@ -391,7 +389,7 @@ M.plugin_load = function(provider, do_not_lazy_load)
           ret = M.__MINI
         end
         -- Load custom setup file
-        if vim.g.fzf_lua_is_headless
+        if _G._fzf_lua_is_headless
             ---@diagnostic disable-next-line: undefined-field
             and _G._devicons_setup and uv.fs_stat(_G._devicons_setup) then
           ---@diagnostic disable-next-line: undefined-field
@@ -461,7 +459,7 @@ end
 M.get_devicon = function(filepath, extensionOverride)
   local STATE = M.state()
   if not STATE or not STATE.icons then
-    return unpack({ "", nil })
+    return "", nil
   end
 
   local function validate_hl(col)
@@ -512,7 +510,12 @@ M.get_devicon = function(filepath, extensionOverride)
 
   -- mini.icons supports lookup by filetype
   if not icon and STATE.icons.by_filetype then
-    local ft = path.ft_match({ filename = filename })
+    -- NOTE: due to our mocks we should never fail on fast events but plugins such as
+    -- "snacks/bigfile" uses `vim.filetype.add` to a pattern function callback that makes
+    -- `vim.{api|fn}` calls so we still have to make sure we schedule the call on the
+    -- main thread but not on headless as it will fail due to uv callbacks (#1831/#1841)
+    local ft_match = _G._fzf_lua_is_headless and path.ft_match or path.ft_match_fast_event
+    local ft = ft_match({ filename = filename })
     local by_ft = ft and #ft > 0 and STATE.icons.by_filetype[ft]
 
     if not by_ft then

@@ -3,7 +3,7 @@
 -- does not close the pipe before all writes are complete
 -- option to not add '\n' on content function callbacks
 -- https://github.com/vijaymarupudi/nvim-fzf/blob/master/lua/fzf.lua
-local uv = vim.loop
+local uv = vim.uv or vim.loop
 
 local utils = require "fzf-lua.utils"
 local libuv = require "fzf-lua.libuv"
@@ -104,7 +104,7 @@ function M.raw_fzf(contents, fzf_cli_args, opts)
   table.insert(cmd, ">")
   table.insert(cmd, libuv.shellescape(outputtmpname))
 
-  local fd, output_pipe = nil, nil
+  local output_pipe = nil
   local finish_called = false
   local write_cb_count = 0
   local windows_pipe_server = nil
@@ -125,7 +125,16 @@ function M.raw_fzf(contents, fzf_cli_args, opts)
       -- We use tbl for perf reasons, from ':help system':
       --  If {cmd} is a List it runs directly (no 'shell')
       --  If {cmd} is a String it runs in the 'shell'
-      vim.fn.system({ "mkfifo", fifotmpname })
+      utils.io_system({ "mkfifo", fifotmpname })
+      -- have to open this after there is a reader (termopen)
+      -- otherwise this will block
+      uv.fs_open(fifotmpname, "w", -1, function(err, fd)
+        if err then error(err) end
+        output_pipe = uv.new_pipe(false)
+        output_pipe:open(fd)
+        -- print(output_pipe:getpeername())
+        handle_contents()
+      end)
     end
   end
 
@@ -210,11 +219,7 @@ function M.raw_fzf(contents, fzf_cli_args, opts)
     -- https://github.com/neovim/neovim/issues/20726
     -- https://github.com/neovim/neovim/pull/30056
     if not utils.__HAS_NVIM_0102 then
-      if vim.keymap then
-        vim.keymap.set("t", "<C-c>", "<Esc>", { buffer = 0 })
-      else
-        vim.api.nvim_buf_set_keymap(0, "t", "<C-c>", "<Esc>", { noremap = true })
-      end
+      vim.keymap.set("t", "<C-c>", "<Esc>", { buffer = 0 })
     end
 
     -- A more robust way of entering TERMINAL mode "t". We had quite a few issues
@@ -247,12 +252,18 @@ function M.raw_fzf(contents, fzf_cli_args, opts)
   end
 
   local co = coroutine.running()
-  local jobstart = opts.is_fzf_tmux and vim.fn.jobstart or vim.fn.termopen
+  local jobstart = opts.is_fzf_tmux and vim.fn.jobstart or utils.termopen
   local shell_cmd = utils.__IS_WINDOWS
       -- MSYS2 comes with "/usr/bin/cmd" that precedes "cmd.exe" (#1396)
       and { "cmd.exe", "/d", "/e:off", "/f:off", "/v:off", "/c" }
       or { "sh", "-c" }
-  if utils.__IS_WINDOWS then
+  if opts.pipe_cmd then
+    if FZF_DEFAULT_COMMAND then
+      table.insert(cmd, 1, string.format("(%s) | ", FZF_DEFAULT_COMMAND))
+      FZF_DEFAULT_COMMAND = nil
+    end
+    table.insert(shell_cmd, table.concat(cmd, " "))
+  elseif utils.__IS_WINDOWS then
     utils.tbl_join(shell_cmd, cmd)
   else
     table.insert(shell_cmd, table.concat(cmd, " "))
@@ -268,6 +279,10 @@ function M.raw_fzf(contents, fzf_cli_args, opts)
       ["SHELL"] = shell_cmd[1],
       ["FZF_DEFAULT_COMMAND"] = FZF_DEFAULT_COMMAND,
       ["SKIM_DEFAULT_COMMAND"] = FZF_DEFAULT_COMMAND,
+      ["FZF_LUA_SERVER"] = vim.g.fzf_lua_server,
+      -- sk --tmux didn't pass all environemnt variable (https://github.com/skim-rs/skim/issues/732)
+      ["SKIM_FZF_LUA_SERVER"] = vim.g.fzf_lua_server,
+      ["VIMRUNTIME"] = vim.env.VIMRUNTIME,
       ["FZF_DEFAULT_OPTS"] = (function()
         -- Newer style `--preview-window` options in FZF_DEFAULT_OPTS such as:
         --   --preview-window "right,50%,hidden,<60(up,70%,hidden)"
@@ -289,6 +304,8 @@ function M.raw_fzf(contents, fzf_cli_args, opts)
       -- with fzf-lua's rg opts (#1266)
       ["RIPGREP_CONFIG_PATH"] = type(opts.RIPGREP_CONFIG_PATH) == "string"
           and libuv.expand(opts.RIPGREP_CONFIG_PATH) or "",
+      -- Prevents spamming rust logs with skim (#1959)
+      ["RUST_LOG"] = "",
     },
     on_exit = function(_, rc, _)
       local output = {}
@@ -324,18 +341,6 @@ function M.raw_fzf(contents, fzf_cli_args, opts)
     else
       vim.cmd [[startinsert]]
     end
-  end
-
-  if not utils.__IS_WINDOWS
-      and (type(contents) == "function" or type(contents) == "table")
-  then
-    -- have to open this after there is a reader (termopen)
-    -- otherwise this will block
-    fd = uv.fs_open(fifotmpname, "w", -1)
-    output_pipe = uv.new_pipe(false)
-    output_pipe:open(fd)
-    -- print(output_pipe:getpeername())
-    handle_contents()
   end
 
   return coroutine.yield()

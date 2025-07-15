@@ -10,6 +10,9 @@ local make_entry = require "fzf-lua.make_entry"
 
 local M = {}
 
+---@param opts fzf-lua.Config
+---@param unfiltered integer[]|fun():integer[]
+---@return integer[], table, integer
 local filter_buffers = function(opts, unfiltered)
   if type(unfiltered) == "function" then
     unfiltered = unfiltered()
@@ -30,7 +33,8 @@ local filter_buffers = function(opts, unfiltered)
         return b
       end, opts.buffers)
       or vim.tbl_filter(function(b)
-        if not vim.api.nvim_buf_is_valid(b) then
+        local buf_valid = vim.api.nvim_buf_is_valid(b)
+        if not buf_valid then
           excluded[b] = true
         elseif not opts.show_unlisted and b ~= core.CTX().bufnr and vim.fn.buflisted(b) ~= 1 then
           excluded[b] = true
@@ -46,14 +50,12 @@ local filter_buffers = function(opts, unfiltered)
           excluded[b] = true
         elseif opts.cwd and not path.is_relative_to(vim.api.nvim_buf_get_name(b), opts.cwd) then
           excluded[b] = true
+        elseif type(opts.filter) == "function" then
+          -- Custom buffer filter #2162
+          excluded[b] = not opts.filter(b)
         end
-        if utils.buf_is_qf(b) then
-          if opts.show_quickfix then
-            -- show_quickfix trumps show_unlisted
-            excluded[b] = nil
-          else
-            excluded[b] = true
-          end
+        if buf_valid and vim.api.nvim_get_option_value("ft", { buf = b }) == "qf" then
+          excluded[b] = not opts.show_quickfix and true or nil
         end
         if not excluded[b] and b > max_bufnr then
           max_bufnr = b
@@ -64,7 +66,7 @@ local filter_buffers = function(opts, unfiltered)
   return bufnrs, excluded, max_bufnr
 end
 
-
+---@param buf integer
 local getbuf = function(buf)
   return {
     bufnr = buf,
@@ -83,11 +85,9 @@ end
 -- DON'T FORCE ME TO UPDATE THIS HACK NEOVIM LOL
 -- NOTE: reduced to 2038 due to 32bit sys limit (#1636)
 local _FUTURE = os.time({ year = 2038, month = 1, day = 1, hour = 0, minute = 00 })
+---@param buf table
+---@return integer
 local get_unixtime = function(buf)
-  if tonumber(buf) then
-    -- When called from `buffer_lines`
-    buf = getbuf(buf)
-  end
   if buf.flag == "%" then
     return _FUTURE
   elseif buf.flag == "#" then
@@ -97,7 +97,12 @@ local get_unixtime = function(buf)
   end
 end
 
+---@param opts fzf-lua.Config
+---@param bufnrs integer[]
+---@param winid integer?
+---@return table[]
 local populate_buffer_entries = function(opts, bufnrs, winid)
+  ---@type table[]
   local buffers = {}
   for _, bufnr in ipairs(bufnrs) do
     local buf = getbuf(bufnr)
@@ -199,15 +204,14 @@ M.buffers = function(opts)
   end
 
   -- build the "reload" cmd and remove '-- {+}' from the initial cmd
-  local reload, id = shell.reload_action_cmd(opts, "{+}")
-  local contents = reload:gsub("%-%-%s+{%+}$", "")
-  opts.__reload_cmd = reload
+  local contents, id = shell.reload_action_cmd(opts, "")
+  opts.__reload_cmd = contents
 
   -- get current tab/buffer/previous buffer
   -- save as a func ref for resume to reuse
   opts._fn_pre_fzf = function()
     shell.set_protected(id)
-    core.CTX(true) -- include `nvim_list_bufs` in context
+    core.CTX({ includeBuflist = true }) -- include `nvim_list_bufs` in context
   end
 
   if opts.fzf_opts["--header-lines"] == nil then
@@ -229,6 +233,11 @@ end
 M.blines = function(opts)
   opts = config.normalize_opts(opts, "blines")
   opts.current_buffer_only = true
+  if utils.mode_is_visual() then
+    local _, sel = utils.get_visual_selection()
+    opts.start_line = opts.start_line or sel.start.line
+    opts.end_line = opts.end_line or sel["end"].line
+  end
   M.buffer_lines(opts)
 end
 
@@ -236,7 +245,7 @@ end
 M.buffer_lines = function(opts)
   if not opts then return end
 
-  opts.fn_pre_fzf = function() core.CTX(true) end
+  opts.fn_pre_fzf = function() core.CTX({ includeBuflist = true }) end
   opts.fn_pre_fzf()
 
   local contents = function(cb)
@@ -256,7 +265,7 @@ M.buffer_lines = function(opts)
 
       if opts.sort_lastused and utils.tbl_count(buffers) > 1 then
         table.sort(buffers, function(a, b)
-          return get_unixtime(a) > get_unixtime(b)
+          return get_unixtime(getbuf(a)) > get_unixtime(getbuf(b))
         end)
       end
 
@@ -313,10 +322,15 @@ M.buffer_lines = function(opts)
           return bname, bicon and bicon .. utils.nbsp or nil
         end)()
 
-        local offset, lines = 0, #data
-        if opts.current_buffer_only and opts.start == "cursor" then
-          -- start display from current line and wrap from bottom (#822)
-          offset = core.CTX().cursor[1] - 1
+        local offset, start_line, end_line, lines = 0, 1, #data, #data
+        if opts.current_buffer_only then
+          start_line = opts.start_line or 1
+          end_line = opts.end_line or end_line
+          lines = end_line - start_line + 1
+          if opts.start == "cursor" then
+            -- start display from current line and wrap from bottom (#822)
+            offset = core.CTX().cursor[1] - start_line
+          end
         end
 
         for i = 1, lines do
@@ -324,6 +338,7 @@ M.buffer_lines = function(opts)
           if lnum > lines then
             lnum = lnum % lines
           end
+          lnum = lnum + start_line - 1
 
           -- NOTE: Space after `lnum` is U+00A0 (decimal: 160)
           add_entry(string.format("[%s]\t%s\t%s%s\t%s \t%s",
@@ -372,6 +387,26 @@ M.tabs = function(opts)
       msg = opts[k](t, t == core.CTX().tabnr)
     end
     return msg, hl
+  end
+
+  if opts.locate and utils.has(opts, "fzf", { 0, 36 }) then
+    -- Set cursor to current buffer
+    utils.map_set(opts, "keymap.fzf.load",
+      "transform:" .. FzfLua.shell.raw_action(function(_, _, _)
+        local pos = 0
+        for tabnr, tabh in ipairs(vim.api.nvim_list_tabpages()) do
+          pos = pos + 1
+          for _, w in ipairs(vim.api.nvim_tabpage_list_wins(tabh)) do
+            local b = filter_buffers(opts, { vim.api.nvim_win_get_buf(w) })[1]
+            if b then
+              pos = pos + 1
+              if tabnr == core.CTX().tabnr and w == core.CTX().winid then
+                return string.format("pos(%d)", pos)
+              end
+            end
+          end
+        end
+      end, "", opts.debug))
   end
 
   opts.__fn_reload = opts.__fn_reload or function(_)
@@ -440,15 +475,14 @@ M.tabs = function(opts)
   end
 
   -- build the "reload" cmd and remove '-- {+}' from the initial cmd
-  local reload, id = shell.reload_action_cmd(opts, "{+}")
-  local contents = reload:gsub("%-%-%s+{%+}$", "")
-  opts.__reload_cmd = reload
+  local contents, id = shell.reload_action_cmd(opts, "")
+  opts.__reload_cmd = contents
 
   -- get current tab/buffer/previous buffer
   -- save as a func ref for resume to reuse
   opts._fn_pre_fzf = function()
     shell.set_protected(id)
-    core.CTX(true) -- include `nvim_list_bufs` in context
+    core.CTX({ includeBuflist = true }) -- include `nvim_list_bufs` in context
   end
 
   opts = core.set_header(opts, opts.headers or { "actions", "cwd" })
@@ -475,8 +509,10 @@ M.treesitter = function(opts)
     opts._bufname = utils.nvim_buf_get_name(opts.bufnr)
   end
 
-  local ts_parsers = require("nvim-treesitter.parsers")
-  if not ts_parsers.has_parser(ts_parsers.get_buf_lang(opts.bufnr)) then
+  local ts = vim.treesitter
+  local ft = vim.bo[opts.bufnr].ft
+  local lang = ts.language.get_lang(ft) or ft
+  if not utils.has_ts_parser(lang) then
     utils.info(string.format("No treesitter parser found for '%s' (bufnr=%d).",
       opts._bufname, opts.bufnr))
     return
@@ -487,15 +523,79 @@ M.treesitter = function(opts)
     return "@" .. (map[kind] or kind)
   end
 
+  local parser = ts.get_parser(opts.bufnr)
+  if not parser then return end
+  parser:parse()
+  local root = parser:trees()[1]:root()
+  if not root then return end
+
+  local query = (ts.query.get(lang, "locals"))
+  if not query then return end
+
+  local get = function(bufnr)
+    local definitions = {}
+    local scopes = {}
+    local references = {}
+    for id, node, metadata in query:iter_captures(root, bufnr) do
+      local kind = query.captures[id]
+
+      local scope = "local" ---@type string
+      for k, v in pairs(metadata) do
+        if type(k) == "string" and vim.endswith(k, "local.scope") then
+          scope = v
+        end
+      end
+
+      if node and vim.startswith(kind, "local.definition") then
+        table.insert(definitions, { kind = kind, node = node, scope = scope })
+      end
+
+      if node and kind == "local.scope" then
+        table.insert(scopes, node)
+      end
+
+      if node and kind == "local.reference" then
+        table.insert(references, { kind = kind, node = node, scope = scope })
+      end
+    end
+
+    return definitions, references, scopes
+  end
+
+
+
+  local function recurse_local_nodes(local_def, accumulator, full_match, last_match)
+    if type(local_def) ~= "table" then
+      return
+    end
+    if local_def.node then
+      accumulator(local_def, local_def.node, full_match, last_match)
+    else
+      for match_key, def in pairs(local_def) do
+        recurse_local_nodes(def, accumulator,
+          full_match and (full_match .. "." .. match_key) or match_key, match_key)
+      end
+    end
+  end
+
+  local get_local_nodes = function(local_def)
+    local result = {}
+    recurse_local_nodes(local_def, function(def, _, kind)
+      table.insert(result, vim.tbl_extend("keep", { kind = kind }, def))
+    end)
+    return result
+  end
+
   local contents = function(cb)
     coroutine.wrap(function()
       local co = coroutine.running()
-      local ts_locals = require("nvim-treesitter.locals")
-      for _, definition in ipairs(ts_locals.get_definitions(opts.bufnr)) do
-        local nodes = ts_locals.get_local_nodes(definition)
+      for _, definition in ipairs(get(opts.bufnr)) do
+        local nodes = get_local_nodes(definition)
         for _, node in ipairs(nodes) do
           if node.node then
             vim.schedule(function()
+              -- Remove node prefix, e.g. `locals.definition.var`
+              node.kind = node.kind and node.kind:gsub(".*%.", "")
               local lnum, col, _, _ = vim.treesitter.get_node_range(node.node)
               local node_text = vim.treesitter.get_node_text(node.node, opts.bufnr)
               local node_kind = node.kind and utils.ansi_from_hl(kind2hl(node.kind), node.kind)
@@ -515,6 +615,109 @@ M.treesitter = function(opts)
             coroutine.yield()
           end
         end
+      end
+      cb(nil)
+    end)()
+  end
+
+  opts = core.set_header(opts, opts.headers or { "actions" })
+
+  core.fzf_exec(contents, opts)
+end
+
+M.spellcheck = function(opts)
+  opts = config.normalize_opts(opts, "spellcheck")
+  if not opts then return end
+
+  if #vim.bo.spelllang == 0 then
+    utils.info("Spell language not set, use ':setl spl=...' to enable spell checking.")
+    return
+  end
+
+  -- Default to current buffer
+  opts._bufnr = tonumber(opts.bufnr) or vim.api.nvim_get_current_buf()
+  opts._bufname = path.basename(vim.api.nvim_buf_get_name(opts._bufnr))
+  if not opts._bufname or #opts._bufname == 0 then
+    opts._bufname = utils.nvim_buf_get_name(opts._bufnr)
+  end
+
+  if utils.mode_is_visual() then
+    local _, sel = utils.get_visual_selection()
+    opts.start_line = opts.start_line or sel.start.line
+    opts.end_line = opts.end_line or sel["end"].line
+  end
+
+  local contents = function(cb)
+    coroutine.wrap(function()
+      local co = coroutine.running()
+      local data = {}
+
+      -- Use vim.schedule to avoid
+      -- E5560: vimL function must not be called in a lua loop callback
+      vim.schedule(function()
+        local bufnr = opts._bufnr
+        local filepath = vim.api.nvim_buf_get_name(bufnr)
+        if vim.api.nvim_buf_is_loaded(bufnr) then
+          data = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+        elseif vim.fn.filereadable(filepath) ~= 0 then
+          data = vim.fn.readfile(filepath, "")
+        end
+        coroutine.resume(co)
+      end)
+
+      -- wait for vim.schedule
+      coroutine.yield()
+
+      local offset = 0
+      local start_line = opts.start_line or 1
+      local end_line = opts.end_line or #data
+      local lines = end_line - start_line + 1
+
+      if opts.start == "cursor" then
+        -- start display from current line and wrap from bottom
+        offset = core.CTX().cursor[1] - start_line
+      end
+
+      for i = 1, lines do
+        local lnum = i + offset
+        if lnum > lines then
+          lnum = lnum % lines
+        end
+        lnum = lnum + start_line - 1
+
+        local line, from, to = data[lnum], 1, nil
+        repeat
+          local word_separator = opts.word_separator or "[%s%p]"
+          local function trim(s)
+            return s:gsub("^" .. word_separator .. "+", ""):gsub(word_separator .. "+$", "")
+          end
+          from, to = string.find(line, "%w+", from)
+          local word = from and string.sub(line, from, to)
+          local prefix = from and string.sub(line, from - 1, from - 1) or ""
+          local postfix = to and string.sub(line, to + 1, to + 1) or ""
+          local valid_word = word
+              and (#prefix == 0 or prefix:match("^" .. word_separator))
+              and (#postfix == 0 or postfix:match(word_separator .. "$"))
+          if valid_word then
+            local _, lead = word:find("^" .. word_separator .. "+")
+            local spell = vim.spell.check(trim(word))[1]
+            if spell then
+              cb(string.format("[%s]%s%s:%s:%s\t\t%s",
+                utils.ansi_codes[opts.hls.buf_nr](tostring(opts._bufnr)),
+                utils.nbsp,
+                utils.ansi_codes[opts.hls.buf_name](opts._bufname),
+                utils.ansi_codes[opts.hls.buf_linenr](tostring(lnum)),
+                utils.ansi_codes[opts.hls.path_colnr](tostring(from + (lead or 0))),
+                trim(word)
+              ), function(err)
+                coroutine.resume(co)
+                if err then cb(nil) end
+              end)
+              coroutine.yield()
+            end
+          end
+          if from then from = to + 1 end
+        until not from
       end
       cb(nil)
     end)()

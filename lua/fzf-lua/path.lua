@@ -408,6 +408,10 @@ function M.entry_to_location(entry, opts)
   }
 end
 
+---@param entry string
+---@param opts fzf-lua.Config
+---@param force_uri boolean
+---@return fzf-lua.path.Entry
 function M.entry_to_file(entry, opts, force_uri)
   opts = opts or {}
   if opts._fmt then
@@ -425,8 +429,9 @@ function M.entry_to_file(entry, opts, force_uri)
   stripped = M.tilde_to_HOME(stripped)
   -- Prepend cwd unless entry is already a URI (e.g. nvim-jdtls "jdt://...")
   local isURI = stripped:match("^%a+://")
-  if opts.cwd and #opts.cwd > 0 and not isURI and not M.is_absolute(stripped) then
-    stripped = M.join({ opts.cwd, stripped })
+  local cwd = opts.cwd or opts._cwd
+  if cwd and #cwd > 0 and not isURI and not M.is_absolute(stripped) then
+    stripped = M.join({ cwd, stripped })
   end
   --Force LSP jumps using `vim.lsp.util.show_document` so that LSP entries are
   --added to the tag stack (see `:help gettagstack`)
@@ -436,7 +441,7 @@ function M.entry_to_file(entry, opts, force_uri)
   end
   -- Entry metadata (before `utils.nbsp`) can contain `[bufnr]` which should
   -- be used instead of the file path, used in buffers, tabs, lines|blines
-  local bufnr = idx > 1 and entry:sub(1, idx):match("%[(%d+)%]") or nil
+  local bufnr = not opts._ctag and idx > 1 and entry:sub(1, idx):match("%[(%d+)%]") or nil
   if isURI and not bufnr then
     -- LSP entries can appear as URIs, for example when using nvim-jdtls
     -- references inside ".jar" files will have a prefix of "jdt://..."
@@ -502,20 +507,17 @@ function M.entry_to_file(entry, opts, force_uri)
 end
 
 function M.git_cwd(cmd, opts)
-  -- backward compat, used to be single cwd param
-  -- NOTE: we use deepcopy due to a bug with Windows network drives starting with "\\"
-  -- as `vim.fn.expand` would reduce the double slash to a single slash modifying the
-  -- original `opts.cwd` ref (#1429)
-  local o = opts and utils.tbl_deep_clone(opts) or {}
-  if type(o) == "string" then
-    o = { cwd = o }
-  end
   local git_args = {
     { "cwd",          "-C" },
     { "git_dir",      "--git-dir" },
     { "git_worktree", "--work-tree" },
     { "git_config",   "-c",         noexpand = true },
   }
+  -- NOTE: we copy the opts due to a bug with Windows network drives starting with "\\"
+  -- as `vim.fn.expand` would reduce the double slash to a single slash modifying the
+  -- original `opts.cwd` ref (#1429)
+  local o = {}
+  for _, a in ipairs(git_args) do o[a[1]] = opts[a[1]] end
   if type(cmd) == "string" then
     local args = ""
     for _, a in ipairs(git_args) do
@@ -554,6 +556,9 @@ function M.git_root(opts, noerr)
   return output[1]
 end
 
+---@param str string
+---@param opts fzf-lua.Config
+---@return fzf-lua.path.Entry|fzf-lua.keymap.Entry
 function M.keymap_to_entry(str, opts)
   local valid_modes = {
     n = true,
@@ -629,6 +634,22 @@ function M.ft_match(args)
   vim.fn.fnamemodify = _fnamemodify
   vim.env = _env
   if ok then return ft, on_detect end
+end
+
+function M.ft_match_fast_event(args)
+  local co = coroutine.running()
+  if co and vim.in_fast_event() then
+    local ft
+    vim.schedule(function()
+      -- ~~We're already scheduling, safe to use the original API~~
+      -- NOTE: apparently we're wrong, the original can fail (#2001)
+      ft = M.ft_match(args)
+      coroutine.resume(co, ft)
+    end)
+    return coroutine.yield()
+  else
+    return M.ft_match(args)
+  end
 end
 
 return M

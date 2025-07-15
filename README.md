@@ -2,7 +2,7 @@
 
 # fzf :heart: lua
 
-![Neovim version](https://img.shields.io/badge/Neovim-0.7-57A143?style=flat-square&logo=neovim)
+![Neovim version](https://img.shields.io/badge/Neovim-0.9-57A143?style=flat-square&logo=neovim)
 
 [Quickstart](#quickstart) • [Installation](#installation) • [Usage](#usage) • [Commands](#commands) • [Customization](#customization) • [Wiki](https://github.com/ibhagwan/fzf-lua/wiki)
 
@@ -17,7 +17,7 @@
 
 ## Quickstart
 
-To quickly test this plugin without changing your configuration run (will run in it's own sandbox
+To quickly test this plugin without changing your configuration run (will run in its own sandbox
 with the default keybinds below):
 > [!NOTE]
 > it's good practice to first
@@ -55,7 +55,7 @@ Using [lazy.nvim](https://github.com/folke/lazy.nvim)
 
 ### Dependencies
 
-- [`neovim`](https://github.com/neovim/neovim/releases) version > `0.7.0`
+- [`neovim`](https://github.com/neovim/neovim/releases) version >= `0.9`
 - [`fzf`](https://github.com/junegunn/fzf) version > `0.25`
   or [`skim`](https://github.com/skim-rs/skim) binary installed
 - [nvim-web-devicons](https://github.com/nvim-tree/nvim-web-devicons)
@@ -86,6 +86,11 @@ to configure in `previewer.builtin.extensions`):
 - [viu](https://github.com/atanunq/viu) - terminal image previewer
 - [ueberzugpp](https://github.com/jstkdng/ueberzugpp) - terminal image previewer using X11/Wayland
   child windows, sixels, kitty and iterm2
+
+> [!TIP]
+> If your terminal supports the kitty graphics protocol (e.g. kitty, ghostty, etc) install
+> @folke's [snacks.nvim](https://github.com/folke/snacks.nvim) to render images using the
+> `snacks.image` module, it will be auto-detected by fzf-lua and requires no configuration.
 
 ### Windows Notes
 
@@ -118,7 +123,8 @@ run any fzf-lua command like this:
 or with arguments:
 
 ```lua
-:lua require('fzf-lua').files({ cwd = '~/.config' })
+-- Once fzf-lua is loaded you can also use the lua global `_G.FzfLua`
+:lua FzfLua.files({ cwd = '~/.config' })
 -- or using the `FzfLua` vim command:
 :FzfLua files cwd=~/.config
 ```
@@ -128,7 +134,7 @@ or with arguments:
 Resuming work from where you left off is as easy as:
 
 ```lua
-:lua require('fzf-lua').resume()
+:lua FzfLua.resume()
 -- or
 :FzfLua resume
 ```
@@ -136,7 +142,7 @@ Resuming work from where you left off is as easy as:
 Alternatively, resuming work on a specific picker:
 
 ```lua
-:lua require('fzf-lua').files({ resume = true })
+:lua FzfLua.files({ resume = true })
 -- or
 :FzfLua files resume=true
 ```
@@ -145,15 +151,17 @@ Alternatively, resuming work on a specific picker:
 > By default pressing esc or ctrl-c terminates the fzf process,
 > as such resume is not perfect and is limited to resuming the
 > picker/query and sometimes additional parameters such as regex
-> in grep, etc, for a more "complete" resume press alt-esc to
-> hide the fzf process instead, this will keep the fzf process
-> running in the background and thus will restore the process
-> entirely including cursor position and selection.
-> To configure hiding by default:
+> in grep, etc, for a more complete resume use the "hide" profile,
+> this will modify the esc bind to hide fzf-lua and keep the fzf
+> process running in the background allowing `:FzfLua resume` to
+> restore the picker state entirely, including cursor position
+> and selection. To configure hiding by default:
 > ```lua
-> require("fzf-lua").setup({ keymap = { builtin = { true, ["<Esc>"] = "hide" } } })
+> require("fzf-lua").setup({
+>   "hide",
+>   -- your other settings here 
+> })
 > ```
-
 
 **LIST OF AVAILABLE COMMANDS BELOW** 👇
 
@@ -230,6 +238,8 @@ Alternatively, resuming work on a specific picker:
 | -------------- | ------------------------ |
 | `git_files`    | `git ls-files`           |
 | `git_status`   | `git status`             |
+| `git_diff`     | `git diff {ref}`         |
+| `git_hunks`    | `git hunks {ref}`        |
 | `git_commits`  | git commit log (project) |
 | `git_bcommits` | git commit log (buffer)  |
 | `git_blame`    | git blame (buffer)       |
@@ -287,9 +297,11 @@ Alternatively, resuming work on a specific picker:
 | `registers`            | :registers                     |
 | `tagstack`             | :tags                          |
 | `autocmds`             | :autocmd                       |
+| `nvim_options`         | neovim options                 |
 | `keymaps`              | key mappings                   |
 | `filetypes`            | filetypes                      |
 | `menus`                | menus                          |
+| `spellcheck`           | misspelled words in buffer     |
 | `spell_suggest`        | spelling suggestions           |
 | `packadd`              | :packadd <package>             |
 
@@ -334,6 +346,16 @@ Alternatively, resuming work on a specific picker:
 
 </details>
 <details>
+<summary>Zoxide</summary>
+
+### zoxide
+
+| Command        | List                    |
+| -------------- | ----------------------- |
+| `zoxide`       | list recent directories |
+
+</details>
+<details>
 <summary>Completion Functions</summary>
 
 ### Completion Functions
@@ -357,6 +379,8 @@ Alternatively, resuming work on a specific picker:
 require("fzf-lua").setup{
   -- MISC GLOBAL SETUP OPTIONS, SEE BELOW
   -- fzf_bin = ...,
+  -- each of these options can also be passed as function that return options table
+  -- e.g. winopts = function() return { ... } end
   winopts = { ...  },     -- UI Options
   keymap = { ...  },      -- Neovim keymaps / fzf binds
   actions = { ...  },     -- Fzf "accept" binds
@@ -412,13 +436,14 @@ winopts = {
     backdrop         = 60,
     -- title         = "Title",
     -- title_pos     = "center",        -- 'left', 'center' or 'right'
+    -- title_flags   = false,           -- uncomment to disable title flags
     fullscreen       = false,           -- start fullscreen?
     -- enable treesitter highlighting for the main fzf window will only have
     -- effect where grep like results are present, i.e. "file:line:col:text"
     -- due to highlight color collisions will also override `fzf_colors`
     -- set `fzf_colors=false` or `fzf_colors.hl=...` to override
     treesitter       = {
-      enabled    = false,
+      enabled    = true,
       fzf_colors = { ["hl"] = "-1:reverse", ["hl+"] = "-1:reverse" }
     },
     preview = {
@@ -542,6 +567,9 @@ actions = {
       ["ctrl-t"]      = actions.file_tabedit,
       ["alt-q"]       = actions.file_sel_to_qf,
       ["alt-Q"]       = actions.file_sel_to_ll,
+      ["alt-i"]       = actions.toggle_ignore,
+      ["alt-h"]       = actions.toggle_hidden,
+      ["alt-f"]       = actions.toggle_follow,
     },
   }
 ```
@@ -696,7 +724,7 @@ previewers = {
       -- from being modified when toggling the preview.
       toggle_behavior = "default",
       -- Title transform function, by default only displays the tail
-      -- title_fnamemodify = function(s) vim.fn.fnamemodify(s, ":t") end,
+      -- title_fnamemodify = function(s) return vim.fn.fnamemodify(s, ":t") end,
       -- preview extensions using a custom shell command:
       -- for example, use `viu` for image previews
       -- will do nothing if `viu` isn't executable
@@ -714,11 +742,10 @@ previewers = {
       --   "contain", "forced_cover", "cover"
       -- https://github.com/seebye/ueberzug
       ueberzug_scaler = "cover",
-      -- Custom filetype autocmds aren't triggered on
-      -- the preview buffer, define them here instead
-      -- ext_ft_override = { ["ksql"] = "sql", ... },
       -- render_markdown.nvim integration, enabled by default for markdown
       render_markdown = { enabled = true, filetypes = { ["markdown"] = true } },
+      -- snacks.images integration, enabled by default
+      snacks_image = { enabled = true, render_inline = true },
     },
     -- Code Action previewers, default is "codeaction" (set via `lsp.code_actions.previewer`)
     -- "codeaction_native" uses fzf's native previewer, recommended when combined with git-delta
@@ -754,7 +781,7 @@ previewers = {
                                         -- set to 'false' to disable
     prompt            = 'Files❯ ',
     multiprocess      = true,           -- run command in a separate process
-    git_icons         = true,           -- show git icons?
+    git_icons         = false,          -- show git icons?
     file_icons        = true,           -- show file icons (true|"devicons"|"mini")?
     color_icons       = true,           -- colorize file|git icons
     -- path_shorten   = 1,              -- 'true' or number, shorten path?
@@ -765,9 +792,10 @@ previewers = {
     -- otherwise auto-detect prioritizes `fd`:`rg`:`find`
     -- default options are controlled by 'fd|rg|find|_opts'
     -- cmd            = "rg --files",
-    find_opts         = [[-type f -not -path '*/\.git/*']],
-    rg_opts           = [[--color=never --files --hidden --follow -g "!.git"]],
-    fd_opts           = [[--color=never --type f --hidden --follow --exclude .git]],
+    find_opts         = [[-type f \! -path '*/.git/*']],
+    rg_opts           = [[--color=never --hidden --files -g "!.git"]],
+    fd_opts           = [[--color=never --hidden --type f --type l --exclude .git]],
+    dir_opts          = [[/s/b/a:-d]],
     -- by default, cwd appears in the header only if {opts} contain a cwd
     -- parameter to a different folder than the current working directory
     -- uncomment if you wish to force display of the cwd as part of the
@@ -778,11 +806,13 @@ previewers = {
     cwd_prompt_shorten_val = 1,         -- shortened path parts length
     toggle_ignore_flag = "--no-ignore", -- flag toggled in `actions.toggle_ignore`
     toggle_hidden_flag = "--hidden",    -- flag toggled in `actions.toggle_hidden`
+    toggle_follow_flag = "-L",          -- flag toggled in `actions.toggle_follow`
+    hidden             = true,          -- enable hidden files by default
+    follow             = false,         -- do not follow symlinks by default
+    no_ignore          = false,         -- respect ".gitignore"  by default
     actions = {
       -- inherits from 'actions.files', here we can override
       -- or set bind to 'false' to disable a default action
-      -- action to toggle `--no-ignore`, requires fd or rg installed
-      ["ctrl-g"]         = { actions.toggle_ignore },
       -- uncomment to override `actions.file_edit_or_qf`
       --   ["enter"]     = actions.file_edit,
       -- custom actions are available too
@@ -806,7 +836,6 @@ previewers = {
       cmd           = "git -c color.status=false --no-optional-locks status --porcelain=v1 -u",
       multiprocess  = true,           -- run command in a separate process
       file_icons    = true,
-      git_icons     = true,
       color_icons   = true,
       previewer     = "git_diff",
       -- git-delta is automatically detected as pager, uncomment to disable
@@ -825,6 +854,27 @@ previewers = {
       --   ["ctrl-x"]  = { fn = actions.git_reset, reload = true },
       --   ["ctrl-s"]  = { fn = actions.git_stage_unstage, reload = true },
       -- },
+    },
+    diff = {
+      cmd               = "git --no-pager diff --name-only {ref}",
+      ref               = "HEAD",
+      preview           = "git diff {ref} {file}",
+      -- git-delta is automatically detected as pager, uncomment to disable
+      -- preview_pager = false,
+      file_icons        = true,
+      color_icons       = true,
+      fzf_opts          = { ["--multi"] = true },
+    },
+    hunks = {
+      cmd               = "git --no-pager diff --color=always {ref}",
+      ref               = "HEAD",
+      file_icons        = true,
+      color_icons       = true,
+      fzf_opts          = {
+      ["--multi"] = true,
+      ["--delimiter"] = ":",
+      ["--nth"] = "3..",
+      },
     },
     commits = {
       prompt        = 'Commits❯ ',
@@ -927,7 +977,7 @@ previewers = {
     prompt            = 'Rg❯ ',
     input_prompt      = 'Grep For❯ ',
     multiprocess      = true,           -- run command in a separate process
-    git_icons         = true,           -- show git icons?
+    git_icons         = false,          -- show git icons?
     file_icons        = true,           -- show file icons (true|"devicons"|"mini")?
     color_icons       = true,           -- colorize file|git icons
     -- executed command priority is 'cmd' (if exists)
@@ -936,6 +986,9 @@ previewers = {
     -- cmd            = "rg --vimgrep",
     grep_opts         = "--binary-files=without-match --line-number --recursive --color=auto --perl-regexp -e",
     rg_opts           = "--column --line-number --no-heading --color=always --smart-case --max-columns=4096 -e",
+    hidden             = false,       -- disable hidden files by default
+    follow             = false,       -- do not follow symlinks by default
+    no_ignore          = false,       -- respect ".gitignore"  by default
     -- Uncomment to use the rg config file `$RIPGREP_CONFIG_PATH`
     -- RIPGREP_CONFIG_PATH = vim.env.RIPGREP_CONFIG_PATH
     --
@@ -1005,6 +1058,7 @@ previewers = {
     prompt            = 'Tabs❯ ',
     tab_title         = "Tab",
     tab_marker        = "<<",
+    locate            = true,         -- position cursor at current window
     file_icons        = true,         -- show file icons (true|"devicons"|"mini")?
     color_icons       = true,         -- colorize file|git icons
     actions = {
@@ -1044,7 +1098,6 @@ previewers = {
     ctags_file            = nil,      -- auto-detect from tags-option
     multiprocess          = true,
     file_icons            = true,
-    git_icons             = true,
     color_icons           = true,
     -- 'tags_live_grep' options, `rg` prioritizes over `grep`
     rg_opts               = "--no-heading --color=always --smart-case",
@@ -1064,7 +1117,6 @@ previewers = {
     ctags_autogen         = true,     -- dynamically generate ctags each call
     multiprocess          = true,
     file_icons            = false,
-    git_icons             = false,
     rg_opts               = "--color=never --no-heading",
     grep_opts             = "--color=never --perl-regexp",
     fzf_opts              = { ["--tiebreak"] = "begin" },
@@ -1077,10 +1129,6 @@ previewers = {
     winopts           = { height = 0.55, width = 0.30, },
     -- uncomment to ignore colorschemes names (lua patterns)
     -- ignore_patterns   = { "^delek$", "^blue$" },
-    -- uncomment to execute a callback on preview|close
-    -- e.g. a call to reset statusline highlights
-    -- cb_preview        = function() ... end,
-    -- cb_exit           = function() ... end,
   },
   awesome_colorschemes = {
     prompt            = 'Colorschemes❯ ',
@@ -1099,9 +1147,6 @@ previewers = {
       ["ctrl-r"]  = { fn = actions.cs_update, reload = true },
       ["ctrl-x"]  = { fn = actions.cs_delete, reload = true },
     },
-    -- uncomment to execute a callback on preview|close
-    -- cb_preview        = function() ... end,
-    -- cb_exit           = function() ... end,
   },
   keymaps = {
     prompt            = "Keymaps> ",
@@ -1119,9 +1164,17 @@ previewers = {
       ["ctrl-t"]      = actions.keymap_tabedit,
     },
   },
+  nvim_options = {
+    prompt            = "Nvim Options> ",
+    separator         = "│",  -- separator between option name and value
+    color_values      = true, -- colorize boolean values
+    actions           = {
+      ["enter"]     = { fn = actions.nvim_opt_edit_local, reload = true },
+      ["alt-enter"] = { fn = actions.nvim_opt_edit_global, reload = true },
+    },
+  },
   quickfix = {
     file_icons        = true,
-    git_icons         = true,
     only_valid        = false, -- select among only the valid quickfix entries
   },
   quickfix_stack = {
@@ -1135,6 +1188,8 @@ previewers = {
     async_or_timeout  = 5000,       -- timeout(ms) or 'true' for async calls
     file_icons        = true,
     git_icons         = false,
+    jump1             = true,       -- skip the UI when result is a single entry
+    jump1_action      = FzfLua.actions.file_edit
     -- The equivalent of using `includeDeclaration` in lsp buf calls, e.g:
     -- :lua vim.lsp.buf.references({includeDeclaration = false})
     includeDeclaration = true,      -- include current declaration in LSP context
@@ -1200,7 +1255,6 @@ previewers = {
         prompt      = "LSP Finder> ",
         file_icons  = true,
         color_icons = true,
-        git_icons   = false,
         async       = true,         -- async by default
         silent      = true,         -- suppress "not found"
         separator   = "| ",         -- separator after provider prefix, `false` to disable
@@ -1221,12 +1275,14 @@ previewers = {
   diagnostics ={
     prompt            = 'Diagnostics❯ ',
     cwd_only          = false,
-    file_icons        = true,
+    file_icons        = false,
     git_icons         = false,
-    diag_icons        = true,
+    color_headings    = true,   -- use diag highlights to color source & filepath
+    diag_icons        = true,   -- display icons from diag sign definitions
     diag_source       = true,   -- display diag source (e.g. [pycodestyle])
+    diag_code         = true,   -- display diag code (e.g. [undefined])
     icon_padding      = '',     -- add padding for wide diagnostics signs
-    multiline         = true,   -- concatenate multi-line diags into a single line
+    multiline         = 2,      -- split heading and diag to separate lines
     -- severity_only:   keep any matching exact severity
     -- severity_limit:  keep any equal or more severe (lower)
     -- severity_bound:  keep any equal or less severe (higher)
@@ -1240,16 +1296,30 @@ previewers = {
   complete_path = {
     cmd          = nil, -- default: auto detect fd|rg|find
     complete     = { ["enter"] = actions.complete },
+    word_pattern = nil, -- default: "[^%s\"']*"
   },
   complete_file = {
     cmd          = nil, -- default: auto detect rg|fd|find
     file_icons   = true,
     color_icons  = true,
-    git_icons    = false,
+    word_pattern = nil,
     -- actions inherit from 'actions.files' and merge
     actions      = { ["enter"] = actions.complete },
     -- previewer hidden by default
     winopts      = { preview = { hidden = true } },
+  },
+  zoxide = {
+    cmd          = "zoxide query --list --score",
+    git_root     = false, -- auto-detect git root
+    formatter    = "path.dirname_first",
+    fzf_opts     = {
+      ["--no-multi"]  = true,
+      ["--delimiter"] = "[\t]",
+      ["--tabstop"]   = "4",
+      ["--tiebreak"]  = "end,index", -- prefer dirs ending with search term
+      ["--nth"]       = "2..",       -- exclude score from fuzzy matching
+    },
+    actions      = { enter = actions.cd }
   },
   -- uncomment to use fzf native previewers
   -- (instead of using a neovim floating window)
@@ -1274,13 +1344,17 @@ previewers = {
 Different `fzf` layout:
 
 ```lua
-:lua require('fzf-lua').files({ fzf_opts = {['--layout'] = 'reverse-list'} })
+:lua FzfLua.files({ fzf_opts = {['--layout'] = 'reverse-list'} })
+-- Or via the vimL command
+:FzfLua files fzf_opts.--layout=reverse-list
 ```
 
 Using `files` with a different command and working directory:
 
 ```lua
-:lua require'fzf-lua'.files({ prompt="LS> ", cmd = "ls", cwd="~/<folder>" })
+:lua FzfLua.files({ prompt="LS> ", cmd = "ls", cwd="~/.config" })
+-- Or via the vimL command
+:FzfLua files prompt="LS>\ " cmd=ls cwd=~/.config
 ```
 
 Using `live_grep` with `git grep`:
@@ -1289,10 +1363,13 @@ Using `live_grep` with `git grep`:
 :lua require'fzf-lua'.live_grep({ cmd = "git grep --line-number --column --color=always" })
 ```
 
-`colorschemes` with non-default window size:
+`spell_suggest` with non-default window size relative to cursor:
 
 ```lua
-:lua require'fzf-lua'.colorschemes({ winopts = { height=0.33, width=0.33 } })
+:lua require'fzf-lua'.spell_suggest({ winopts = { height=0.33, width=0.33, relative="cursor" } })
+-- Or via the vimL command
+:FzfLua spell_suggest winopts={height=0.33,width=0.33,relative=cursor}
+:FzfLua spell_suggest winopts={height=0.33,width=0.33} winopts.relative=cursor
 ```
 
 </details>
@@ -1348,8 +1425,9 @@ require('fzf-lua').setup({'fzf-vim'})
 
 | Profile           | Details                                                                                             |
 | ----------------- | --------------------------------------------------------------------------------------------------- |
-| `default`         | fzf-lua defaults, uses neovim "builtin" previewer and devicons (if available) for git/files/buffers |
-| `default-title`   | fzf-lua defaults, using title instead of prompt (default on neovim > =0.9)                          |
+| `default`         | fzf-lua defaults, uses neovim "builtin" buffer previewer and devicons (if available)                |
+| `default-title`   | fzf-lua defaults, using title for picker info (default on neovim >= 0.9)                            |
+| `default-prompt`  | fzf-lua defaults, using prompt for picker info (default on neovim < 0.9)                            |
 | `fzf-native`      | utilizes fzf's native previewing ability in the terminal where possible using `bat` for previews    |
 | `fzf-tmux`        | similar to `fzf-native` and opens in a tmux popup (requires tmux > 3.2)                             |
 | `fzf-vim`         | closest to `fzf.vim`'s defaults (+icons), also sets up user commands (`:Files`, `:Rg`, etc)         |
@@ -1359,6 +1437,8 @@ require('fzf-lua').setup({'fzf-vim'})
 | `borderless`      | borderless and minimalistic seamless look &amp; feel                                                |
 | `borderless-full` | borderless with description in window title (instead of prompt)                                     |
 | `border-fused`    | single border around both fzf and the previewer                                                     |
+| `ivy`             | UI at bottom, similar to telescope's ivy layout                                                     |
+| `hide`            | send fzf process to background instead of termination                                               |
 
 </details>
 
@@ -1450,7 +1530,7 @@ require('fzf-lua').setup {
 
 or temporarily in the call:
 ```lua
-:lua require'fzf-lua'.files({ hls={preview_title="IncSearch"} })
+:lua FzfLua.files({ hls={preview_title="IncSearch"} })
 -- vimL equivalent
 :FzfLua files hls.preview_title=IncSearch
 ```
@@ -1468,6 +1548,7 @@ temporarily overridden by its corresponding `winopts` option:
 | FzfLuaNormal            | Normal           | `hls.normal`         | Main win `fg/bg`                      |
 | FzfLuaBorder            | Normal           | `hls.border`         | Main win border                       |
 | FzfLuaTitle             | FzfLuaNormal     | `hls.title`          | Main win title                        |
+| FzfLuaTitleFlags        | CursorLine       | `hls.title_flags`    | Main win title flags                  |
 | FzfLuaBackdrop          | \*bg=Black       | `hls.backdrop`       | Backdrop color                        |
 | FzfLuaPreviewNormal     | FzfLuaNormal     | `hls.preview_normal` | Builtin preview `fg/bg`               |
 | FzfLuaPreviewBorder     | FzfLuaBorder     | `hls.preview_border` | Builtin preview border                |
@@ -1497,7 +1578,8 @@ temporarily overridden by its corresponding `winopts` option:
 | FzfLuaDirIcon           | Directory        | `hls.dir_icon`       | Paths directory icon                  |
 | FzfLuaDirPart           | Comment          | `hls.dir_part`       | Path formatters directory hl group    |
 | FzfLuaFilePart          | @none            | `hls.file_part`      | Path formatters file hl group         |
-| FzfLuaLiveSym           | \*Brown1         | `hls.live_sym`       | LSP live symbols query match          |
+| FzfLuaLivePrompt        | \*PaleVioletRed1 | `hls.live_prompt`    | "live" queries prompt text            |
+| FzfLuaLiveSym           | \*PaleVioletRed1 | `hls.live_sym`       | LSP live symbols query match          |
 | FzfLuaFzfNormal         | FzfLuaNormal     | `fzf.normal`         | fzf's `fg\|bg`                        |
 | FzfLuaFzfCursorLine     | FzfLuaCursorLine | `fzf.cursorline`     | fzf's `fg+\|bg+`                      |
 | FzfLuaFzfMatch          | Special          | `fzf.match`          | fzf's `hl+`                           |
@@ -1530,7 +1612,7 @@ your current Neovim colorscheme:
 ```lua
 require("fzf-lua").setup({ fzf_colors = true })
 -- Or in the direct call options
-:lua require("fzf-lua").files({ fzf_colors = true })
+:lua FzfLua.files({ fzf_colors = true })
 :FzfLua files fzf_colors=true
 ```
 

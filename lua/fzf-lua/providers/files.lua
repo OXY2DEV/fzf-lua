@@ -13,9 +13,6 @@ local get_files_cmd = function(opts)
   if opts.raw_cmd and #opts.raw_cmd > 0 then
     return opts.raw_cmd
   end
-  if opts.cmd and #opts.cmd > 0 then
-    return opts.cmd
-  end
   local search_paths = (function()
     -- NOTE: deepcopy to avoid recursive shellescapes with `actions.toggle_ignore`
     local search_paths = type(opts.search_paths) == "table" and vim.deepcopy(opts.search_paths)
@@ -31,7 +28,9 @@ local get_files_cmd = function(opts)
     end
   end)()
   local command = nil
-  if vim.fn.executable("fdfind") == 1 then
+  if opts.cmd and #opts.cmd > 0 then
+    command = opts.cmd
+  elseif vim.fn.executable("fdfind") == 1 then
     command = string.format("fdfind %s%s", opts.fd_opts,
       search_paths and string.format(" . %s", search_paths) or "")
   elseif vim.fn.executable("fd") == 1 then
@@ -41,10 +40,31 @@ local get_files_cmd = function(opts)
     command = string.format("rg %s%s", opts.rg_opts,
       search_paths and string.format(" %s", search_paths) or "")
   elseif utils.__IS_WINDOWS then
-    command = "dir /s/b/a:-d"
+    command = "dir " .. opts.dir_opts
   else
-    command = string.format("find -L %s %s",
+    command = string.format("find %s %s",
       search_paths and search_paths or ".", opts.find_opts)
+  end
+  for k, v in pairs({
+    follow = opts.toggle_follow_flag or "-L",
+    hidden = opts.toggle_hidden_flag or "--hidden",
+    no_ignore = opts.toggle_ignore_flag or "--no-ignore",
+  }) do
+    (function()
+      local toggle, is_find = opts[k], nil
+      -- Do nothing unless opt was set
+      if opts[k] == nil then return end
+      if command:match("^dir") then return end
+      if command:match("^find") then
+        if k == "no_ignore" then return end
+        if k == "hidden" then
+          is_find = true
+          toggle = not opts[k]
+          v = [[\! -path '*/.*']]
+        end
+      end
+      command = utils.toggle_cmd_flag(command, v, toggle, is_find)
+    end)()
   end
   return command
 end
@@ -69,6 +89,7 @@ M.files = function(opts)
     opts.cwd = uv.cwd()
   end
   local contents = core.mt_cmd_wrapper(opts)
+  opts = core.set_title_flags(opts, { "cmd" })
   opts = core.set_header(opts, opts.headers or { "actions", "cwd" })
   return core.fzf_exec(contents, opts)
 end
@@ -117,15 +138,65 @@ M.args = function(opts)
   end
 
   -- build the "reload" cmd and remove '-- {+}' from the initial cmd
-  local reload, id = shell.reload_action_cmd(opts, "{+}")
-  local contents = reload:gsub("%-%-%s+{%+}$", "")
-  opts.__reload_cmd = reload
+  local contents, id = shell.reload_action_cmd(opts, "")
+  opts.__reload_cmd = contents
 
   opts._fn_pre_fzf = function()
     shell.set_protected(id)
   end
 
   opts = core.set_header(opts, opts.headers or { "actions", "cwd" })
+  return core.fzf_exec(contents, opts)
+end
+
+M.zoxide = function(opts)
+  opts = config.normalize_opts(opts, "zoxide")
+  if not opts then return end
+
+  if vim.fn.executable("zoxide") ~= 1 then
+    utils.warn("Install zoxide to use this picker.")
+    return
+  end
+
+  -- we always require processing
+  opts.requires_processing = true
+
+  local contents, id
+  if opts.multiprocess then
+    opts.__mt_transform = [[return require("fzf-lua.make_entry").zoxide]]
+    contents = core.mt_cmd_wrapper(opts)
+  else
+    opts.__fn_transform = opts.__fn_transform or
+        function(x)
+          return make_entry.zoxide(x, opts)
+        end
+
+    opts.__fn_reload = function(_)
+      return opts.cmd
+    end
+
+    -- build the "reload" cmd and remove '-- {+}' from the initial cmd
+    contents, id = shell.reload_action_cmd(opts, "")
+    opts.__reload_cmd = contents
+
+    opts._fn_pre_fzf = function()
+      shell.set_protected(id)
+    end
+  end
+
+  if opts.header == nil then
+    opts.header = string.format("%8s\t%s", "score", "folder")
+  end
+
+  opts.preview = (function()
+    if opts.preview then return opts.preview end
+    return vim.fn.executable("lsd") == 1
+        and "lsd -la --color=always --icon=always --group-directories-first --literal {2}"
+        or vim.fn.executable("eza") == 1
+        and "eza -la --color=always --icons -g --group-directories-first {2}"
+        or "ls -la {2}"
+  end)()
+
   return core.fzf_exec(contents, opts)
 end
 
